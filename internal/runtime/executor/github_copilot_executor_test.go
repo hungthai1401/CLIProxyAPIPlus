@@ -251,14 +251,14 @@ func TestTranslateGitHubCopilotResponsesNonStreamToClaude_TextMapping(t *testing
 	t.Parallel()
 	resp := []byte(`{"id":"resp_1","model":"gpt-5-codex","output":[{"type":"message","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":3,"output_tokens":5}}`)
 	out := translateGitHubCopilotResponsesNonStreamToClaude(resp)
-	if gjson.Get(out, "type").String() != "message" {
-		t.Fatalf("type = %q, want message", gjson.Get(out, "type").String())
+	if gjson.GetBytes(out, "type").String() != "message" {
+		t.Fatalf("type = %q, want message", gjson.GetBytes(out, "type").String())
 	}
-	if gjson.Get(out, "content.0.type").String() != "text" {
-		t.Fatalf("content.0.type = %q, want text", gjson.Get(out, "content.0.type").String())
+	if gjson.GetBytes(out, "content.0.type").String() != "text" {
+		t.Fatalf("content.0.type = %q, want text", gjson.GetBytes(out, "content.0.type").String())
 	}
-	if gjson.Get(out, "content.0.text").String() != "hello" {
-		t.Fatalf("content.0.text = %q, want hello", gjson.Get(out, "content.0.text").String())
+	if gjson.GetBytes(out, "content.0.text").String() != "hello" {
+		t.Fatalf("content.0.text = %q, want hello", gjson.GetBytes(out, "content.0.text").String())
 	}
 }
 
@@ -266,14 +266,14 @@ func TestTranslateGitHubCopilotResponsesNonStreamToClaude_ToolUseMapping(t *test
 	t.Parallel()
 	resp := []byte(`{"id":"resp_2","model":"gpt-5-codex","output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"sum","arguments":"{\"a\":1}"}],"usage":{"input_tokens":1,"output_tokens":2}}`)
 	out := translateGitHubCopilotResponsesNonStreamToClaude(resp)
-	if gjson.Get(out, "content.0.type").String() != "tool_use" {
-		t.Fatalf("content.0.type = %q, want tool_use", gjson.Get(out, "content.0.type").String())
+	if gjson.GetBytes(out, "content.0.type").String() != "tool_use" {
+		t.Fatalf("content.0.type = %q, want tool_use", gjson.GetBytes(out, "content.0.type").String())
 	}
-	if gjson.Get(out, "content.0.name").String() != "sum" {
-		t.Fatalf("content.0.name = %q, want sum", gjson.Get(out, "content.0.name").String())
+	if gjson.GetBytes(out, "content.0.name").String() != "sum" {
+		t.Fatalf("content.0.name = %q, want sum", gjson.GetBytes(out, "content.0.name").String())
 	}
-	if gjson.Get(out, "stop_reason").String() != "tool_use" {
-		t.Fatalf("stop_reason = %q, want tool_use", gjson.Get(out, "stop_reason").String())
+	if gjson.GetBytes(out, "stop_reason").String() != "tool_use" {
+		t.Fatalf("stop_reason = %q, want tool_use", gjson.GetBytes(out, "stop_reason").String())
 	}
 }
 
@@ -282,18 +282,26 @@ func TestTranslateGitHubCopilotResponsesStreamToClaude_TextLifecycle(t *testing.
 	var param any
 
 	created := translateGitHubCopilotResponsesStreamToClaude([]byte(`data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5-codex"}}`), &param)
-	if len(created) == 0 || !strings.Contains(created[0], "message_start") {
+	if len(created) == 0 || !strings.Contains(string(created[0]), "message_start") {
 		t.Fatalf("created events = %#v, want message_start", created)
 	}
 
 	delta := translateGitHubCopilotResponsesStreamToClaude([]byte(`data: {"type":"response.output_text.delta","delta":"he"}`), &param)
-	joinedDelta := strings.Join(delta, "")
+	var deltaStrs []string
+	for _, b := range delta {
+		deltaStrs = append(deltaStrs, string(b))
+	}
+	joinedDelta := strings.Join(deltaStrs, "")
 	if !strings.Contains(joinedDelta, "content_block_start") || !strings.Contains(joinedDelta, "text_delta") {
 		t.Fatalf("delta events = %#v, want content_block_start + text_delta", delta)
 	}
 
 	completed := translateGitHubCopilotResponsesStreamToClaude([]byte(`data: {"type":"response.completed","response":{"usage":{"input_tokens":7,"output_tokens":9}}}`), &param)
-	joinedCompleted := strings.Join(completed, "")
+	var completedStrs []string
+	for _, b := range completed {
+		completedStrs = append(completedStrs, string(b))
+	}
+	joinedCompleted := strings.Join(completedStrs, "")
 	if !strings.Contains(joinedCompleted, "message_delta") || !strings.Contains(joinedCompleted, "message_stop") {
 		t.Fatalf("completed events = %#v, want message_delta + message_stop", completed)
 	}
@@ -412,5 +420,59 @@ func TestDetectVisionContent_NoMessages(t *testing.T) {
 	body := []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
 	if detectVisionContent(body) {
 		t.Fatal("expected no vision content when messages field is absent")
+	}
+}
+
+func TestNormalizeGitHubCopilotChatTools_EmptyFunctionDescriptionOmitted(t *testing.T) {
+	t.Parallel()
+	// empty string description should be deleted so GitHub Copilot doesn't reject with 400
+	body := []byte(`{"tools":[{"type":"function","function":{"name":"my_tool","description":"","parameters":{"type":"object"}}}]}`)
+	got := normalizeGitHubCopilotChatTools(body)
+	tools := gjson.GetBytes(got, "tools").Array()
+	if len(tools) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(tools))
+	}
+	if tools[0].Get("function.description").Exists() {
+		t.Fatalf("function.description should be omitted for empty string, got %q", tools[0].Get("function.description").String())
+	}
+}
+
+func TestNormalizeGitHubCopilotChatTools_WhitespaceOnlyFunctionDescriptionOmitted(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"tools":[{"type":"function","function":{"name":"my_tool","description":"   ","parameters":{"type":"object"}}}]}`)
+	got := normalizeGitHubCopilotChatTools(body)
+	tools := gjson.GetBytes(got, "tools").Array()
+	if len(tools) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(tools))
+	}
+	if tools[0].Get("function.description").Exists() {
+		t.Fatalf("function.description should be omitted for whitespace-only, got %q", tools[0].Get("function.description").String())
+	}
+}
+
+func TestNormalizeGitHubCopilotResponsesTools_EmptyDescriptionOmitted(t *testing.T) {
+	t.Parallel()
+	// Claude-format tool with empty description should not include description field
+	body := []byte(`{"tools":[{"name":"mcp_tool","description":"","input_schema":{"type":"object"}}]}`)
+	got := normalizeGitHubCopilotResponsesTools(body)
+	tools := gjson.GetBytes(got, "tools").Array()
+	if len(tools) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(tools))
+	}
+	if tools[0].Get("description").Exists() {
+		t.Fatalf("description should be omitted for empty string, got %q", tools[0].Get("description").String())
+	}
+}
+
+func TestNormalizeGitHubCopilotResponsesTools_WhitespaceOnlyDescriptionOmitted(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"tools":[{"name":"mcp_tool","description":"  ","input_schema":{"type":"object"}}]}`)
+	got := normalizeGitHubCopilotResponsesTools(body)
+	tools := gjson.GetBytes(got, "tools").Array()
+	if len(tools) != 1 {
+		t.Fatalf("tools len = %d, want 1", len(tools))
+	}
+	if tools[0].Get("description").Exists() {
+		t.Fatalf("description should be omitted for whitespace-only, got %q", tools[0].Get("description").String())
 	}
 }

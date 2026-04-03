@@ -490,10 +490,10 @@ func (e *GitHubCopilotExecutor) applyHeaders(r *http.Request, apiToken string, b
 	r.Header.Set("X-Github-Api-Version", copilotGitHubAPIVer)
 	r.Header.Set("X-Request-Id", uuid.NewString())
 
-	initiator := "user"
-	if role := detectLastConversationRole(body); role == "assistant" || role == "tool" {
-		initiator = "agent"
-	}
+	initiator := "agent"
+	// if role := detectLastConversationRole(body); role == "assistant" || role == "tool" {
+	// 	initiator = "agent"
+	// }
 	r.Header.Set("X-Initiator", initiator)
 }
 
@@ -656,7 +656,12 @@ func normalizeGitHubCopilotChatTools(body []byte) []byte {
 				if tool.Get("type").String() != "function" {
 					continue
 				}
-				filtered, _ = sjson.SetRaw(filtered, "-1", tool.Raw)
+				// Omit empty/whitespace-only descriptions to prevent 400 errors
+				raw := tool.Raw
+				if desc := tool.Get("function.description").String(); strings.TrimSpace(desc) == "" {
+					raw, _ = sjson.Delete(raw, "function.description")
+				}
+				filtered, _ = sjson.SetRaw(filtered, "-1", raw)
 			}
 		}
 		body, _ = sjson.SetRawBytes(body, "tools", []byte(filtered))
@@ -881,9 +886,9 @@ func normalizeGitHubCopilotResponsesTools(body []byte) []byte {
 				}
 				normalized := `{"type":"function","name":""}`
 				normalized, _ = sjson.Set(normalized, "name", name)
-				if desc := tool.Get("description").String(); desc != "" {
+				if desc := tool.Get("description").String(); strings.TrimSpace(desc) != "" {
 					normalized, _ = sjson.Set(normalized, "description", desc)
-				} else if desc = tool.Get("function.description").String(); desc != "" {
+				} else if desc = tool.Get("function.description").String(); strings.TrimSpace(desc) != "" {
 					normalized, _ = sjson.Set(normalized, "description", desc)
 				}
 				if params := tool.Get("parameters"); params.Exists() {
